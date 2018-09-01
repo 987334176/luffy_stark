@@ -6,6 +6,15 @@ from django.conf.urls import url
 from django.shortcuts import HttpResponse
 
 class RoleConfig(StarkConfig):
+    order_by = ['-id']  # 有负号,表示降序
+    # 定义显示的列
+    list_display = [StarkConfig.display_checkbox,'id','title']
+    # def get_list_display(self):  # 钩子函数,用来做定制显示
+    #     if 1 == 1:
+    #         return ['id']
+    #     else:
+    #         return ['id','title']
+
     def sk2(self, request):
         return HttpResponse('sk2神仙水')
 

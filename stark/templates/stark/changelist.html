@@ -1,0 +1,36 @@
+{% extends 'stark/layout.html' %}
+
+{% block content %}
+    <h1>列表页面</h1>
+    <div>
+        {% if add_btn %}
+        <div style="margin: 5px 0;">
+            {{ add_btn }}
+        </div>
+        {% endif %}
+        <table class="table table-bordered">
+            <thead>
+                <tr>
+                    {% for item in header_list %}
+                    <th>{{ item }}</th>
+                    {% endfor %}
+
+                </tr>
+            </thead>
+            <tbody>
+                {% for row_list in body_list %}
+                <tr>
+                    {% for col in row_list %}
+                        <td>{{ col }}</td>
+                    {% endfor %}
+
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+    </div>
+
+
+
+{% endblock %}
