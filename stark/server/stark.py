@@ -1,21 +1,49 @@
+import functools
 from django.conf.urls import url
 from django.shortcuts import HttpResponse,render,redirect
 from types import FunctionType
 from django.utils.safestring import mark_safe
 from django.urls import reverse
 from django import forms
+from django.db.models import Q
+from django.http import QueryDict
+
+class ChangeList(object):
+    """
+    封装列表页面需要的所有功能
+    """
+    def __init__(self,config,queryset,q,search_list,page):
+        ### 处理搜索 ###
+        self.q = q  # 搜索条件
+        self.search_list = search_list  # 搜索字段
+        self.page = page  # 分页
+        # 配置参数
+        self.config = config
+        # 批量操作
+        self.action_list = [{'name': func.__name__, 'text': func.text} for func in config.get_action_list()]
+        # 添加按钮
+        self.add_btn = config.get_add_btn()
+        # ORM执行结果
+        self.queryset = queryset
+        # 显示的列
+        self.list_display = config.get_list_display()
 
 class StarkConfig(object):
     def __init__(self,model_class,site):
         self.model_class = model_class
         self.site = site
+        # 定义request变量,用于非视图函数使用。
+        # 在wrapper装饰器中,对这个值重新赋值!
+        self.request = None
+        # url中的搜索条件,存在字典中。key为_filter
+        self.back_condition_key = "_filter"
 
     def display_checkbox(self,row=None,header=False):  # 显示复选框
         if header:
             # 输出中文
             return "选择"
         # 注意：这里要写row.pk,不能写row.id。你不能保证每一个表的主键都是id
-        return mark_safe('<input type="checkbox" name="pk" values="%s"/>' %row.pk)
+        return mark_safe("<input type='checkbox' name='pk' value='%s' />" % row.pk)
 
     def display_edit(self, row=None, header=False):
         if header:
@@ -39,9 +67,29 @@ class StarkConfig(object):
         """ % (self.reverse_edit_url(row), self.reverse_del_url(row),)
         return mark_safe(tpl)
 
+    def multi_delete(self, request):  # 批量删除
+        """
+        批量删除的action
+        :param request:
+        :return:
+        """
+        pk_list = request.POST.getlist('pk')
+        self.model_class.objects.filter(pk__in=pk_list).delete()
+        # return HttpResponse('删除成功')
+
+    multi_delete.text = "批量删除"  # 添加自定义属性text
+
+    def multi_init(self,request):  # 批量初始化
+        print('批量初始化')
+
+    multi_init.text = "批量初始化"  # 添加自定义属性text
+
     order_by = []  # 需要排序的字段,由用户自定义
     list_display = []  # 定义显示的列,由用户自定义
     model_form_class = None  # form组件需要的model_class
+    action_list = []  # 批量操作方法
+    # 搜索字段,如果是跨表字段,要按照ORM语法来
+    search_list = []
 
     def get_order_by(self):  # 获取排序列表
         return self.order_by
@@ -67,57 +115,75 @@ class StarkConfig(object):
 
         return AddModelForm
 
+    def get_action_list(self):  # 获取批量操作方法
+        val = []  # 空列表
+        # 扩展列表的元素
+        val.extend(self.action_list)
+        return val
+
+    def get_action_dict(self):  # 获取匹配操作字典
+        val = {}
+        for item in self.action_list:
+            # 以方法名为key
+            val[item.__name__] = item
+        return val
+
+    def get_search_list(self):  # 获取搜索字段
+        val = []
+        val.extend(self.search_list)
+        return val
+
+    def get_search_condition(self, request):  # 根据关键字,组合ORM查询语句
+        search_list = self.get_search_list()  # ['name','tel']
+        q = request.GET.get('q', "")  # 搜索条件
+        con = Q()
+        con.connector = "OR"  # 以OR作为连接符
+        if q:  # 判断条件不为空
+            for field in search_list:
+                # 合并条件进行查询, __contains表示使用like查询
+                con.children.append(('%s__contains' % field, q))
+
+        return search_list, q, con
+
     def changelist_view(self, request):
         """
         所有URL查看列表页面
         :param request:
         :return:
         """
-        # 根据排序列表进行排序
-        queryset = self.model_class.objects.all().order_by(*self.get_order_by())
+        if request.method == 'POST':
+            action_name = request.POST.get('action')
+            action_dict = self.get_action_dict()
+            if action_name not in action_dict:
+                return HttpResponse('非法请求')
 
-        add_btn = self.get_add_btn()  # 添加按钮返回值,不为空展示,否则不展示
+            response = getattr(self, action_name)(request)
+            if response:
+                return response
 
-        list_display = self.list_display  # 定义显示的列
-        header_list = []  # 定义头部,用来显示verbose_name
-        if list_display:
-            for name_or_func in list_display:
-                if isinstance(name_or_func,FunctionType):
-                    # 执行函数,默认显示中文
-                    verbose_name = name_or_func(self,header=True)
-                else:
-                    # 获取指定字段的verbose_name
-                    verbose_name = self.model_class._meta.get_field(name_or_func).verbose_name
+        ### 处理搜索 ###
+        search_list, q, con = self.get_search_condition(request)
+        # ##### 处理分页 #####
+        from stark.utils.pagination import Pagination
+        # 总条数
+        total_count = self.model_class.objects.filter(con).count()
+        # 复制GET参数
+        query_params = request.GET.copy()
+        # 允许编辑
+        query_params._mutable = True
+        # 使用分页类Pagination,传入参数。每页显示3条
+        page = Pagination(request.GET.get('page'), total_count, request.path_info, query_params, per_page=3)
 
-                header_list.append(verbose_name)
-        else:
-            # 如果list_display为空,添加表名
-            header_list.append(self.model_class._meta.model_name)
+        # 根据排序列表进行排序,以及分页功能
+        queryset = self.model_class.objects.filter(con).order_by(*self.get_order_by())[page.start:page.end]
 
-        body_list = []  # 显示内容
+        cl = ChangeList(self, queryset, q, search_list, page)
+        context = {
+            'cl': cl
+        }
 
-        for row in queryset:
-            # 这里的row是对象，它表示表里面的一条数据
-            row_list = []  # 展示每一行数据
-            if not list_display:  # 如果不在list_display里面
-                # 添加对象
-                row_list.append(row)
-                body_list.append(row_list)
-                continue
-
-            for name_or_func in list_display:
-                if isinstance(name_or_func,FunctionType):
-                    val = name_or_func(self,row=row)  # 执行函数获取,传递row对象
-                else:
-                    # 使用反射获取对象的值
-                    val = getattr(row, name_or_func)
-
-                row_list.append(val)
-
-            body_list.append(row_list)
-
-        # 注意:要传入add_btn
-        return render(request,'stark/changelist.html',{'header_list':header_list,'body_list':body_list,'add_btn':add_btn})
+        # 注意:要传入参数
+        return render(request,'stark/changelist.html',context)
 
     def add_view(self, request):
         """
@@ -181,16 +247,21 @@ class StarkConfig(object):
         self.model_class.objects.filter(pk=pk).delete()
         return redirect(self.reverse_list_url())
 
-    def wrapper(self,func):
-        pass
+    def wrapper(self, func):
+        @functools.wraps(func)
+        def inner(request, *args, **kwargs):
+            self.request = request
+            return func(request, *args, **kwargs)
+
+        return inner
 
     def get_urls(self):
         info = self.model_class._meta.app_label, self.model_class._meta.model_name
         urlpatterns = [
-            url(r'^list/$', self.changelist_view, name='%s_%s_changelist' % info),
-            url(r'^add/$', self.add_view, name='%s_%s_add' % info),
-            url(r'^(?P<pk>\d+)/change/', self.change_view, name='%s_%s_change' % info),
-            url(r'^(?P<pk>\d+)/del/', self.delete_view, name='%s_%s_del' % info),
+            url(r'^list/$', self.wrapper(self.changelist_view), name='%s_%s_changelist' % info),
+            url(r'^add/$', self.wrapper(self.add_view), name='%s_%s_add' % info),
+            url(r'^(?P<pk>\d+)/change/', self.wrapper(self.change_view), name='%s_%s_change' % info),
+            url(r'^(?P<pk>\d+)/del/', self.wrapper(self.delete_view), name='%s_%s_del' % info),
         ]
 
         extra = self.extra_url()
@@ -210,6 +281,15 @@ class StarkConfig(object):
         namespace = self.site.namespace
         name = '%s:%s_%s_changelist' % (namespace, app_label, model_name)
         list_url = reverse(name)
+
+        # 获取当前请求的_filter参数,也就是跳转之前的搜索条件
+        origin_condition = self.request.GET.get(self.back_condition_key)
+        if not origin_condition:  # 如果没有获取到
+            return list_url  # 返回列表页面
+
+        # 列表地址和搜索条件拼接
+        list_url = "%s?%s" % (list_url, origin_condition,)
+
         return list_url
 
     def reverse_add_url(self):  # 反向生成添加url
@@ -218,6 +298,19 @@ class StarkConfig(object):
         namespace = self.site.namespace
         name = '%s:%s_%s_add' % (namespace, app_label, model_name)
         add_url = reverse(name)
+
+        if not self.request.GET:  # 判断get参数为空
+            return add_url  # 返回原url
+        # request.GET的数据类型为QueryDict
+        # 对QueryDict做urlencode编码
+        param_str = self.request.GET.urlencode() # 比如q=xiao&age=20
+        # 允许对QueryDict做修改
+        new_query_dict = QueryDict(mutable=True)
+        # 添加键值对. _filter = param_str
+        new_query_dict[self.back_condition_key] = param_str
+        # 添加url和搜索条件做拼接
+        add_url = "%s?%s" % (add_url, new_query_dict.urlencode(),)
+        # 返回最终url
         return add_url
 
     def reverse_edit_url(self, row):  # 反向生成编辑行内容的url
@@ -228,6 +321,14 @@ class StarkConfig(object):
         name = '%s:%s_%s_change' % (namespace, app_label, model_name)
         # 反向生成url,传入参数pk=row.pk
         edit_url = reverse(name, kwargs={'pk': row.pk})
+
+        if not self.request.GET:
+            return edit_url
+        param_str = self.request.GET.urlencode()
+        new_query_dict = QueryDict(mutable=True)
+        new_query_dict[self.back_condition_key] = param_str
+        edit_url = "%s?%s" % (edit_url, new_query_dict.urlencode(),)
+
         return edit_url
 
     def reverse_del_url(self, row):  # 反向生成删除行内容的url
@@ -237,6 +338,14 @@ class StarkConfig(object):
         # 注意:这里为del
         name = '%s:%s_%s_del' % (namespace, app_label, model_name)
         del_url = reverse(name, kwargs={'pk': row.pk})
+
+        if not self.request.GET:
+            return del_url
+        param_str = self.request.GET.urlencode()
+        new_query_dict = QueryDict(mutable=True)
+        new_query_dict[self.back_condition_key] = param_str
+        del_url = "%s?%s" % (del_url, new_query_dict.urlencode(),)
+
         return del_url
 
     @property

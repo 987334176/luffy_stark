@@ -2,14 +2,17 @@ from django.test import TestCase
 
 # Create your tests here.
 '''
+info = {'k1':'v1','k2':'v2'}
+'''
+from urllib.parse import urlencode
+info = {'k1':'v1','k2':'v2'}
+print(urlencode(info))
 
-info = self.model_class._meta.app_label, self.model_class._meta.model_name
-urlpatterns = [
-    url(r'^list/$', self.changelist_view, name='%s_%s_changelist' % info),
-    ...
-]
-class xxxModelForm(ModelForm):
-    class Meta:
-        model = xxx
-        field = ['id','xx']
+'''
+def __deepcopy__(self, memo):
+    result = self.__class__('', mutable=True, encoding=self.encoding)
+    memo[id(self)] = result
+    for key, value in six.iterlists(self):
+        result.setlist(copy.deepcopy(key, memo), copy.deepcopy(value, memo))
+    return result
 '''
